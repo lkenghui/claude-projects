@@ -102,7 +102,7 @@ class Api:
         threading.Thread(target=run, daemon=True).start()
 
     def run_copy(self):
-        copy_to_clipboard('\n\n---\n\n'.join(self._all_content))
+        copy_to_clipboard(self._all_content[-1] if self._all_content else '')
 
     def run_save(self):
         save_to_notes(self._meeting_title, '\n\n---\n\n'.join(self._all_content))
