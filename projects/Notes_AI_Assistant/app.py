@@ -9,7 +9,7 @@ import webview
 from datetime import datetime
 from dotenv import load_dotenv
 from notes_reader import get_relevant_notes
-from claude_client import prepare_talking_points, ask_followup
+from claude_client import prepare_talking_points, ask_followup, DEFAULT_MODEL
 from file_reader import extract_text
 
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
@@ -41,36 +41,77 @@ def save_config(data: dict):
         pass
 
 
-def copy_to_clipboard(text: str):
-    subprocess.run(['pbcopy'], input=text.encode('utf-8'))
 
-
-def strip_markdown(text: str) -> str:
-    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
-    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
-    text = re.sub(r'\*([^*]+)\*', r'\1', text)
-    text = re.sub(r'__([^_]+)__', r'\1', text)
-    text = re.sub(r'_([^_]+)_', r'\1', text)
-    text = re.sub(r'`([^`]+)`', r'\1', text)
-    text = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', text)
-    return text.strip()
+def markdown_to_notes_html(content: str) -> str:
+    """Convert markdown to HTML suitable for Apple Notes.
+    - h1 → Title style (only used for note title)
+    - h2/h3 → <p><b> (Body Bold) to stay in Body font
+    - bullet lists, bold, paragraphs preserved
+    """
+    lines = content.split('\n')
+    html_lines = []
+    in_list = False
+    for line in lines:
+        if re.match(r'^#{1,3}\s+', line):
+            if in_list:
+                html_lines.append('</ul>')
+                in_list = False
+            heading = re.sub(r'^#{1,3}\s+', '', line).strip()
+            html_lines.append(f'<p><b>{heading}</b></p>')
+        elif re.match(r'^-{3,}\s*$', line):
+            # Horizontal rule — convert to spacing, don't render literally
+            if in_list:
+                html_lines.append('</ul>')
+                in_list = False
+            html_lines.append('<p></p>')
+        elif re.match(r'^[-*]\s+', line):
+            if not in_list:
+                html_lines.append('<ul>')
+                in_list = True
+            item = re.sub(r'^[-*]\s+', '', line).strip()
+            item = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', item)
+            html_lines.append(f'<li>{item}</li>')
+        elif line.strip() == '':
+            if in_list:
+                html_lines.append('</ul>')
+                in_list = False
+            html_lines.append('<p></p>')
+        else:
+            if in_list:
+                html_lines.append('</ul>')
+                in_list = False
+            line = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', line)
+            html_lines.append(f'<p>{line}</p>')
+    if in_list:
+        html_lines.append('</ul>')
+    return '\n'.join(html_lines)
 
 
 def save_to_notes(title: str, content: str):
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding='utf-8') as f:
-        f.write(content)
-        content_path = f.name
-    safe_title = title.replace('"', '\\"')
-    script = f'''tell application "Notes"
-\tset noteContent to read POSIX file "{content_path}"
-\tmake new note with properties {{name:"{safe_title}", body:noteContent}}
+    body_html = markdown_to_notes_html(content)
+    full_html = f'<h1>{title}</h1>{body_html}'
+    html_path = None
+    script_path = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False, encoding='utf-8') as f:
+            f.write(full_html)
+            html_path = f.name
+        script = f'''tell application "Notes"
+\tset noteBody to read POSIX file "{html_path}" as «class utf8»
+\tmake new note with properties {{body:noteBody}}
 end tell'''
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.applescript', delete=False, encoding='utf-8') as f:
-        f.write(script)
-        script_path = f.name
-    subprocess.run(['osascript', script_path], capture_output=True)
-    os.unlink(script_path)
-    os.unlink(content_path)
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.applescript', delete=False, encoding='utf-8') as f:
+            f.write(script)
+            script_path = f.name
+        result = subprocess.run(['osascript', script_path], capture_output=True)
+        if result.returncode != 0:
+            err = result.stderr.decode('utf-8', errors='replace').strip()
+            raise RuntimeError(err or 'AppleScript failed to save note')
+    finally:
+        if script_path and os.path.exists(script_path):
+            os.unlink(script_path)
+        if html_path and os.path.exists(html_path):
+            os.unlink(html_path)
 
 
 class Api:
@@ -79,7 +120,7 @@ class Api:
         self._history = []
         self._all_content = []
         self._meeting_title = ''
-        self._model = 'claude-haiku-4-5-20251001'
+        self._model = DEFAULT_MODEL
 
     # Single JSON string argument — avoids pywebview multi-arg issues
     def run_prepare(self, payload_json):
@@ -145,12 +186,13 @@ class Api:
 
         threading.Thread(target=run, daemon=True).start()
 
-    def run_copy(self):
-        latest = self._all_content[-1] if self._all_content else ''
-        copy_to_clipboard(strip_markdown(latest))
-
     def run_save(self):
-        save_to_notes(self._meeting_title, '\n\n---\n\n'.join(self._all_content))
+        try:
+            save_to_notes(self._meeting_title, '\n\n---\n\n'.join(self._all_content))
+            return {'ok': True}
+        except Exception as e:
+            logging.exception("Error saving to Notes")
+            return {'ok': False, 'error': str(e)}
 
     def process_binary_file(self, filename, b64data, ext):
         def run():
@@ -185,10 +227,10 @@ class Api:
         if all(v is not None for v in (x, y, w, h)):
             self.window.resize(int(w), int(h))
             self.window.move(int(x), int(y))
-        self._win_x = self.window.x
-        self._win_y = self.window.y
-        self._win_w = self.window.width
-        self._win_h = self.window.height
+        self._win_x = getattr(self.window, 'x', None)
+        self._win_y = getattr(self.window, 'y', None)
+        self._win_w = getattr(self.window, 'width', None)
+        self._win_h = getattr(self.window, 'height', None)
 
     def on_moved(self, x, y):
         self._win_x = x
@@ -236,7 +278,7 @@ HTML = """<!DOCTYPE html>
   .file-chip button { background: none; border: none; color: #888; font-size: 13px; cursor: pointer; padding: 0; line-height: 1; }
   #status { padding: 8px 20px; font-size: 13px; color: #666; flex-shrink: 0; min-height: 32px; display: flex; align-items: center; }
   #conversation { flex: 1; overflow-y: auto; padding: 0 20px 16px; }
-  .response-block { background: white; border-radius: 10px; padding: 16px; margin-top: 12px; line-height: 1.7; font-size: 14px; }
+  .response-block { background: white; border-radius: 10px; padding: 16px; margin-top: 12px; line-height: 1.7; font-size: 14px; user-select: text; -webkit-user-select: text; }
   .response-label { font-size: 11px; color: #999; margin-bottom: 8px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
   .stream-content { white-space: pre-wrap; color: #333; }
   .markdown h1, .markdown h2, .markdown h3 { font-size: 14px; font-weight: 600; color: #1d1d1f; margin: 12px 0 4px; }
@@ -257,7 +299,6 @@ HTML = """<!DOCTYPE html>
   #action-bar button { padding: 7px 14px; border-radius: 8px; border: none; font-size: 13px; cursor: pointer; }
   #btn-save { background: #34C759; color: white; }
   #btn-save:disabled { background: #a0e0b0; cursor: default; }
-  #btn-copy { background: #007AFF; color: white; }
 </style>
 </head>
 <body>
@@ -268,7 +309,6 @@ HTML = """<!DOCTYPE html>
     <select id="format-select">
       <option value="bullets">Bullet Points</option>
       <option value="brief">Executive Brief</option>
-      <option value="narrative">Narrative</option>
     </select>
     <select id="model-select">
       <option value="claude-haiku-4-5-20251001">Haiku (Fast)</option>
@@ -294,7 +334,6 @@ HTML = """<!DOCTYPE html>
 </div>
 <div id="action-bar">
   <button id="btn-save" onclick="saveToNotes()">Save to Notes</button>
-  <button id="btn-copy" onclick="copyAll()">Copy</button>
 </div>
 
 <script>
@@ -475,19 +514,18 @@ HTML = """<!DOCTYPE html>
     pywebview.api.run_followup(q);
   }
 
-  function copyAll() {
-    pywebview.api.run_copy();
-    var btn = document.getElementById('btn-copy');
-    btn.textContent = 'Copied ✓';
-    setTimeout(function() { btn.textContent = 'Copy'; }, 2000);
-  }
-
   function saveToNotes() {
     var btn = document.getElementById('btn-save');
     btn.textContent = 'Saving...';
     btn.disabled = true;
-    pywebview.api.run_save().then(function() {
-      btn.textContent = 'Saved ✓';
+    pywebview.api.run_save().then(function(result) {
+      if (result && result.ok) {
+        btn.textContent = 'Saved ✓';
+      } else {
+        btn.textContent = 'Save to Notes';
+        btn.disabled = false;
+        setError(result && result.error ? result.error : 'Failed to save to Notes');
+      }
     });
   }
 
@@ -561,6 +599,7 @@ if __name__ == "__main__":
         width=860,
         height=680,
         min_size=(600, 480),
+        text_select=True,
     )
     api.window = window
     window.events.shown += api.on_shown

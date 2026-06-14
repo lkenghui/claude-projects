@@ -28,6 +28,8 @@ def strip_html(html: str) -> str:
     text = re.sub(r'&amp;', '&', text)
     text = re.sub(r'&lt;', '<', text)
     text = re.sub(r'&gt;', '>', text)
+    text = re.sub(r'&quot;', '"', text)
+    text = re.sub(r'&#39;', "'", text)
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
@@ -71,10 +73,9 @@ def get_relevant_notes(meeting_description: str) -> list:
 \tset output to ""
 \tset noteCount to 0
 \trepeat with aNote in every note
-\t\tif noteCount >= 20 then exit repeat
 \t\tset noteName to name of aNote
 \t\tif noteName starts with "Meeting Prep:" then
-\t\t\t-- skip previous outputs
+\t\t\t-- skip previous AI outputs
 \t\telse
 \t\t\tset noteBody to body of aNote
 \t\t\tif length of noteBody > 300 then
@@ -87,6 +88,7 @@ def get_relevant_notes(meeting_description: str) -> list:
 \t\t\t\tset dateStr to ((year of noteDate) as string) & "-" & ((month of noteDate as integer) as string) & "-" & ((day of noteDate) as string)
 \t\t\t\tset output to output & noteName & "{FIELD_SEP}" & dateStr & "{DATE_SEP}" & noteBody & "{SEPARATOR}"
 \t\t\t\tset noteCount to noteCount + 1
+\t\t\t\tif noteCount >= 20 then exit repeat
 \t\t\tend if
 \t\tend if
 \tend repeat

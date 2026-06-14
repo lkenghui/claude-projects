@@ -5,6 +5,8 @@ from dotenv import load_dotenv
 
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 
+DEFAULT_MODEL = 'claude-haiku-4-5-20251001'
+
 SYSTEM_PROMPT = """You are a personal meeting preparation assistant for Prof Lim Keng Hui, \
 Assistant Chief Executive of the Science & Engineering Research Council (SERC) at A*STAR, \
 Singapore's national research and development agency.
@@ -36,19 +38,19 @@ FORMAT_INSTRUCTIONS = {
         "4. Strategic Questions — 2-3 sharp questions to ask in the meeting"
     ),
     'brief': (
-        "Format as an executive brief:\n"
-        "- One short paragraph of context\n"
-        "- 3-5 key points to raise or drive\n"
-        "- Any commitments or open items from prior notes\n"
-        "- 2-3 strategic questions to ask"
+        "Structure your response with exactly these four sections, each with a clear heading, written in flowing prose (no bullet points or lists):\n"
+        "1. Context — 2-3 sentences summarising the relevant background.\n"
+        "2. Key Talking Points — a short paragraph on what to raise or drive in this meeting.\n"
+        "3. Commitments & Open Items — a short paragraph on past commitments or unresolved issues from prior notes.\n"
+        "4. Strategic Questions — 2-3 sharp questions written as a short paragraph.\n"
+        "Keep each section tight — 3-4 sentences maximum."
     ),
-    'narrative': "Format your response as a concise narrative in flowing paragraphs, suitable for reading aloud.",
 }
 
 
 def prepare_talking_points(notes: list, meeting_description: str,
                            fmt: str = 'bullets', extra_sources: str = '',
-                           model: str = 'claude-haiku-4-5-20251001',
+                           model: str = DEFAULT_MODEL,
                            chunk_callback=None) -> tuple:
     client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
@@ -94,7 +96,7 @@ Please prepare talking points for this meeting."""
 
 
 def ask_followup(question: str, history: list,
-                 model: str = 'claude-haiku-4-5-20251001',
+                 model: str = DEFAULT_MODEL,
                  chunk_callback=None) -> tuple:
     client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
