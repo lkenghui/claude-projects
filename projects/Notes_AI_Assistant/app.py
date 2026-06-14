@@ -356,15 +356,19 @@ HTML = """<!DOCTYPE html>
 if __name__ == "__main__":
     config = load_config()
     api = Api()
+    win_kwargs = dict(
+        width=config.get('width', 860),
+        height=config.get('height', 680),
+        min_size=(600, 480),
+    )
+    if 'x' in config and 'y' in config:
+        win_kwargs['x'] = config['x']
+        win_kwargs['y'] = config['y']
     window = webview.create_window(
         'Notes AI Assistant',
         html=HTML,
         js_api=api,
-        width=config.get('width', 860),
-        height=config.get('height', 680),
-        x=config.get('x'),
-        y=config.get('y'),
-        min_size=(600, 480)
+        **win_kwargs
     )
     api.window = window
     window.events.closed += api.on_closed

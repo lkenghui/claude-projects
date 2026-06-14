@@ -62,7 +62,7 @@ def get_relevant_notes(meeting_description: str) -> list:
     kw_conditions = " or ".join([
         f'noteName contains "{k.replace(chr(92), chr(92)*2).replace(chr(34), chr(92)+chr(34))}"'
         f' or notePreview contains "{k.replace(chr(92), chr(92)*2).replace(chr(34), chr(92)+chr(34))}"'
-        for k in keywords[:5]
+        for k in keywords[:8]
     ])
 
     script = f'''tell application "Notes"
