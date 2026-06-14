@@ -18,6 +18,26 @@ logging.basicConfig(
     format='%(asctime)s %(levelname)s %(message)s'
 )
 
+CONFIG_PATH = os.path.expanduser('~/.notesai_config.json')
+
+
+def load_config():
+    try:
+        with open(CONFIG_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_config(data: dict):
+    try:
+        existing = load_config()
+        existing.update(data)
+        with open(CONFIG_PATH, 'w') as f:
+            json.dump(existing, f)
+    except Exception:
+        pass
+
 
 def copy_to_clipboard(text: str):
     subprocess.run(['pbcopy'], input=text.encode('utf-8'))
@@ -46,6 +66,7 @@ class Api:
         self._history = []
         self._all_content = []
         self._meeting_title = ''
+        self._model = 'claude-haiku-4-5-20251001'
 
     # Single JSON string argument — avoids pywebview multi-arg issues
     def run_prepare(self, payload_json):
@@ -53,12 +74,13 @@ class Api:
         meeting_desc = payload['meeting_desc']
         fmt = payload.get('fmt', 'bullets')
         extra_sources = payload.get('extra_sources', '')
+        self._model = payload.get('model', 'claude-haiku-4-5-20251001')
 
         def run():
             try:
                 self._history = []
                 self._all_content = []
-                logging.info(f"Preparing: {meeting_desc!r} fmt={fmt!r}")
+                logging.info(f"Preparing: {meeting_desc!r} fmt={fmt!r} model={self._model!r}")
                 self.window.evaluate_js("setStatus('searching')")
 
                 notes = get_relevant_notes(meeting_desc)
@@ -69,7 +91,7 @@ class Api:
                 else:
                     self.window.evaluate_js("setStatus('nothinking')")
 
-                result, history = prepare_talking_points(notes, meeting_desc, fmt, extra_sources)
+                result, history = prepare_talking_points(notes, meeting_desc, fmt, extra_sources, self._model)
                 self._history = history
                 self._all_content = [result]
                 self._meeting_title = f"Meeting Prep: {meeting_desc[:40]} ({datetime.now().strftime('%d %b %Y %H:%M')})"
@@ -89,7 +111,7 @@ class Api:
                 logging.info(f"Follow-up: {question!r}")
                 self.window.evaluate_js("setFollowupThinking()")
 
-                result, history = ask_followup(question, self._history)
+                result, history = ask_followup(question, self._history, self._model)
                 self._history = history
                 self._all_content.append(f"Q: {question}\n\n{result}")
 
@@ -107,11 +129,20 @@ class Api:
     def run_save(self):
         save_to_notes(self._meeting_title, '\n\n---\n\n'.join(self._all_content))
 
+    def on_closed(self):
+        save_config({
+            'x': self.window.x,
+            'y': self.window.y,
+            'width': self.window.width,
+            'height': self.window.height,
+        })
+
 
 HTML = """<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: -apple-system, Helvetica, sans-serif; font-size: 14px; background: #f5f5f7; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
@@ -120,7 +151,8 @@ HTML = """<!DOCTYPE html>
   #input-row { display: flex; gap: 8px; margin-bottom: 8px; }
   #meeting-input { flex: 1; padding: 8px 12px; border: 1px solid #d0d0d0; border-radius: 8px; font-size: 14px; outline: none; }
   #meeting-input:focus { border-color: #007AFF; }
-  #format-select { padding: 8px 10px; border: 1px solid #d0d0d0; border-radius: 8px; font-size: 13px; background: white; outline: none; cursor: pointer; }
+  #format-select, #model-select { padding: 8px 10px; border: 1px solid #d0d0d0; border-radius: 8px; font-size: 13px; background: white; outline: none; cursor: pointer; }
+  #model-select { color: #555; }
   #prepare-btn { padding: 8px 16px; background: #007AFF; color: white; border: none; border-radius: 8px; font-size: 14px; cursor: pointer; white-space: nowrap; }
   #prepare-btn:disabled { background: #a0c4ff; cursor: default; }
   #sources-toggle { background: none; border: none; color: #007AFF; font-size: 13px; cursor: pointer; padding: 0; }
@@ -129,8 +161,16 @@ HTML = """<!DOCTYPE html>
   #sources-input:focus { border-color: #007AFF; }
   #status { padding: 8px 20px; font-size: 13px; color: #666; flex-shrink: 0; min-height: 32px; display: flex; align-items: center; }
   #conversation { flex: 1; overflow-y: auto; padding: 0 20px 16px; }
-  .response-block { background: white; border-radius: 10px; padding: 16px; margin-top: 12px; white-space: pre-wrap; line-height: 1.7; font-size: 14px; }
+  .response-block { background: white; border-radius: 10px; padding: 16px; margin-top: 12px; line-height: 1.7; font-size: 14px; }
   .response-label { font-size: 11px; color: #999; margin-bottom: 8px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+  .markdown h1, .markdown h2, .markdown h3 { font-size: 14px; font-weight: 600; color: #1d1d1f; margin: 12px 0 4px; }
+  .markdown h1:first-child, .markdown h2:first-child, .markdown h3:first-child { margin-top: 0; }
+  .markdown p { margin: 6px 0; }
+  .markdown ul, .markdown ol { padding-left: 20px; margin: 4px 0; }
+  .markdown li { margin: 3px 0; }
+  .markdown strong { font-weight: 600; }
+  .markdown em { font-style: italic; }
+  .markdown code { background: #f0f0f0; padding: 1px 5px; border-radius: 4px; font-family: monospace; font-size: 13px; }
   .followup-q { background: #007AFF; color: white; border-radius: 18px; padding: 8px 14px; display: inline-block; max-width: 75%; font-size: 14px; margin-top: 12px; }
   #followup-row { display: flex; gap: 8px; margin-top: 12px; }
   #followup-input { flex: 1; padding: 8px 12px; border: 1px solid #d0d0d0; border-radius: 8px; font-size: 14px; outline: none; display: none; }
@@ -153,6 +193,10 @@ HTML = """<!DOCTYPE html>
       <option value="bullets">Bullet Points</option>
       <option value="brief">Executive Brief</option>
       <option value="narrative">Narrative</option>
+    </select>
+    <select id="model-select">
+      <option value="claude-haiku-4-5-20251001">Haiku (Fast)</option>
+      <option value="claude-sonnet-4-6">Sonnet (Sharp)</option>
     </select>
     <button id="prepare-btn" onclick="prepare()">Prepare</button>
   </div>
@@ -199,6 +243,7 @@ HTML = """<!DOCTYPE html>
     var desc = document.getElementById('meeting-input').value.trim();
     if (!desc) return;
     var fmt = document.getElementById('format-select').value;
+    var model = document.getElementById('model-select').value;
     var extra = document.getElementById('sources-input').value;
     document.getElementById('prepare-btn').disabled = true;
     document.getElementById('action-bar').style.display = 'none';
@@ -207,7 +252,7 @@ HTML = """<!DOCTYPE html>
     var conv = document.getElementById('conversation');
     var blocks = conv.querySelectorAll('.response-block, .followup-q-wrap');
     blocks.forEach(function(b) { b.remove(); });
-    var payload = JSON.stringify({meeting_desc: desc, fmt: fmt, extra_sources: extra});
+    var payload = JSON.stringify({meeting_desc: desc, fmt: fmt, model: model, extra_sources: extra});
     pywebview.api.run_prepare(payload);
   }
 
@@ -216,6 +261,10 @@ HTML = """<!DOCTYPE html>
     if (state === 'searching') el.innerHTML = '🔍 Searching your notes...';
     else if (state === 'thinking') el.innerHTML = '🤔 Found ' + count + ' relevant notes. Generating talking points...';
     else if (state === 'nothinking') el.innerHTML = '🤔 No matching notes found. Generating general talking points...';
+  }
+
+  function renderMarkdown(content) {
+    return marked.parse(content);
   }
 
   function appendResponse(content) {
@@ -227,7 +276,8 @@ HTML = """<!DOCTYPE html>
     label.className = 'response-label';
     label.textContent = 'Analysis';
     var text = document.createElement('div');
-    text.textContent = content;
+    text.className = 'markdown';
+    text.innerHTML = renderMarkdown(content);
     block.appendChild(label);
     block.appendChild(text);
     conv.insertBefore(block, fuRow);
@@ -255,7 +305,8 @@ HTML = """<!DOCTYPE html>
     label.className = 'response-label';
     label.textContent = 'Response';
     var text = document.createElement('div');
-    text.textContent = content;
+    text.className = 'markdown';
+    text.innerHTML = renderMarkdown(content);
     rBlock.appendChild(label);
     rBlock.appendChild(text);
     conv.insertBefore(rBlock, fuRow);
@@ -303,14 +354,18 @@ HTML = """<!DOCTYPE html>
 
 
 if __name__ == "__main__":
+    config = load_config()
     api = Api()
     window = webview.create_window(
         'Notes AI Assistant',
         html=HTML,
         js_api=api,
-        width=860,
-        height=680,
+        width=config.get('width', 860),
+        height=config.get('height', 680),
+        x=config.get('x'),
+        y=config.get('y'),
         min_size=(600, 480)
     )
     api.window = window
+    window.events.closed += api.on_closed
     webview.start()

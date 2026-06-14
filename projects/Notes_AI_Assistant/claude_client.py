@@ -47,7 +47,8 @@ FORMAT_INSTRUCTIONS = {
 
 
 def prepare_talking_points(notes: list, meeting_description: str,
-                           fmt: str = 'bullets', extra_sources: str = '') -> tuple:
+                           fmt: str = 'bullets', extra_sources: str = '',
+                           model: str = 'claude-haiku-4-5-20251001') -> tuple:
     client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
     notes_text = ""
@@ -76,7 +77,7 @@ Please prepare talking points for this meeting."""
     messages = [{"role": "user", "content": user_message}]
 
     response = client.messages.create(
-        model="claude-haiku-4-5-20251001",
+        model=model,
         max_tokens=2000,
         system=SYSTEM_PROMPT,
         messages=messages
@@ -87,14 +88,15 @@ Please prepare talking points for this meeting."""
     return reply, messages
 
 
-def ask_followup(question: str, history: list) -> tuple:
+def ask_followup(question: str, history: list,
+                 model: str = 'claude-haiku-4-5-20251001') -> tuple:
     client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
     messages = history.copy()
     messages.append({"role": "user", "content": question})
 
     response = client.messages.create(
-        model="claude-haiku-4-5-20251001",
+        model=model,
         max_tokens=2000,
         system=SYSTEM_PROMPT,
         messages=messages
