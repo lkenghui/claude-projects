@@ -129,13 +129,33 @@ class Api:
     def run_save(self):
         save_to_notes(self._meeting_title, '\n\n---\n\n'.join(self._all_content))
 
+    def on_shown(self):
+        config = load_config()
+        x, y = config.get('x'), config.get('y')
+        w, h = config.get('width'), config.get('height')
+        if all(v is not None for v in (x, y, w, h)):
+            self.window.resize(int(w), int(h))
+            self.window.move(int(x), int(y))
+        self._win_x = self.window.x
+        self._win_y = self.window.y
+        self._win_w = self.window.width
+        self._win_h = self.window.height
+
+    def on_moved(self, x, y):
+        self._win_x = x
+        self._win_y = y
+
+    def on_resized(self, width, height):
+        self._win_w = width
+        self._win_h = height
+
     def on_closed(self):
-        save_config({
-            'x': self.window.x,
-            'y': self.window.y,
-            'width': self.window.width,
-            'height': self.window.height,
-        })
+        x = getattr(self, '_win_x', None)
+        y = getattr(self, '_win_y', None)
+        w = getattr(self, '_win_w', None)
+        h = getattr(self, '_win_h', None)
+        if all(v is not None for v in (x, y, w, h)):
+            save_config({'x': x, 'y': y, 'width': w, 'height': h})
 
 
 HTML = """<!DOCTYPE html>
@@ -354,22 +374,18 @@ HTML = """<!DOCTYPE html>
 
 
 if __name__ == "__main__":
-    config = load_config()
     api = Api()
-    win_kwargs = dict(
-        width=config.get('width', 860),
-        height=config.get('height', 680),
-        min_size=(600, 480),
-    )
-    if 'x' in config and 'y' in config:
-        win_kwargs['x'] = config['x']
-        win_kwargs['y'] = config['y']
     window = webview.create_window(
         'Notes AI Assistant',
         html=HTML,
         js_api=api,
-        **win_kwargs
+        width=860,
+        height=680,
+        min_size=(600, 480),
     )
     api.window = window
+    window.events.shown += api.on_shown
+    window.events.moved += api.on_moved
+    window.events.resized += api.on_resized
     window.events.closed += api.on_closed
     webview.start()
