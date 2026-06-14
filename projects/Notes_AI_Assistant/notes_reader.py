@@ -16,6 +16,8 @@ def run_applescript(script: str, timeout: int = 60) -> str:
             timeout=timeout
         )
         return result.stdout.strip()
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"Notes.app took too long to respond (>{timeout}s). Your notes library may be too large — try a more specific search.")
     finally:
         os.unlink(tmp_path)
 

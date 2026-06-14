@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import subprocess
 import tempfile
@@ -41,6 +42,17 @@ def save_config(data: dict):
 
 def copy_to_clipboard(text: str):
     subprocess.run(['pbcopy'], input=text.encode('utf-8'))
+
+
+def strip_markdown(text: str) -> str:
+    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
+    text = re.sub(r'\*([^*]+)\*', r'\1', text)
+    text = re.sub(r'__([^_]+)__', r'\1', text)
+    text = re.sub(r'_([^_]+)_', r'\1', text)
+    text = re.sub(r'`([^`]+)`', r'\1', text)
+    text = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', text)
+    return text.strip()
 
 
 def save_to_notes(title: str, content: str):
@@ -91,13 +103,19 @@ class Api:
                 else:
                     self.window.evaluate_js("setStatus('nothinking')")
 
-                result, history = prepare_talking_points(notes, meeting_desc, fmt, extra_sources, self._model)
+                self.window.evaluate_js("startStream('Analysis')")
+
+                def on_chunk(text):
+                    self.window.evaluate_js(f"appendChunk({json.dumps(text)})")
+
+                result, history = prepare_talking_points(
+                    notes, meeting_desc, fmt, extra_sources, self._model, on_chunk)
                 self._history = history
                 self._all_content = [result]
                 self._meeting_title = f"Meeting Prep: {meeting_desc[:40]} ({datetime.now().strftime('%d %b %Y %H:%M')})"
 
                 logging.info("Got talking points")
-                self.window.evaluate_js(f"appendResponse({json.dumps(result)})")
+                self.window.evaluate_js(f"finalizeStream({json.dumps(result)})")
 
             except Exception as e:
                 logging.exception("Error in prepare")
@@ -109,13 +127,16 @@ class Api:
         def run():
             try:
                 logging.info(f"Follow-up: {question!r}")
-                self.window.evaluate_js("setFollowupThinking()")
+                self.window.evaluate_js("startFollowupStream()")
 
-                result, history = ask_followup(question, self._history, self._model)
+                def on_chunk(text):
+                    self.window.evaluate_js(f"appendChunk({json.dumps(text)})")
+
+                result, history = ask_followup(question, self._history, self._model, on_chunk)
                 self._history = history
                 self._all_content.append(f"Q: {question}\n\n{result}")
 
-                self.window.evaluate_js(f"appendFollowup({json.dumps(question)}, {json.dumps(result)})")
+                self.window.evaluate_js(f"finalizeFollowupStream({json.dumps(question)}, {json.dumps(result)})")
 
             except Exception as e:
                 logging.exception("Error in followup")
@@ -124,10 +145,16 @@ class Api:
         threading.Thread(target=run, daemon=True).start()
 
     def run_copy(self):
-        copy_to_clipboard(self._all_content[-1] if self._all_content else '')
+        latest = self._all_content[-1] if self._all_content else ''
+        copy_to_clipboard(strip_markdown(latest))
 
     def run_save(self):
         save_to_notes(self._meeting_title, '\n\n---\n\n'.join(self._all_content))
+
+    def run_clear(self):
+        self._history = []
+        self._all_content = []
+        self._meeting_title = ''
 
     def on_shown(self):
         config = load_config()
@@ -175,7 +202,9 @@ HTML = """<!DOCTYPE html>
   #model-select { color: #555; }
   #prepare-btn { padding: 8px 16px; background: #007AFF; color: white; border: none; border-radius: 8px; font-size: 14px; cursor: pointer; white-space: nowrap; }
   #prepare-btn:disabled { background: #a0c4ff; cursor: default; }
+  #header-controls { display: flex; gap: 12px; align-items: center; }
   #sources-toggle { background: none; border: none; color: #007AFF; font-size: 13px; cursor: pointer; padding: 0; }
+  #clear-btn { background: none; border: none; color: #FF3B30; font-size: 13px; cursor: pointer; padding: 0; display: none; }
   #sources-area { display: none; margin-top: 8px; }
   #sources-input { width: 100%; height: 72px; padding: 8px 10px; border: 1px solid #d0d0d0; border-radius: 8px; font-size: 13px; resize: vertical; font-family: inherit; outline: none; }
   #sources-input:focus { border-color: #007AFF; }
@@ -183,6 +212,7 @@ HTML = """<!DOCTYPE html>
   #conversation { flex: 1; overflow-y: auto; padding: 0 20px 16px; }
   .response-block { background: white; border-radius: 10px; padding: 16px; margin-top: 12px; line-height: 1.7; font-size: 14px; }
   .response-label { font-size: 11px; color: #999; margin-bottom: 8px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+  .stream-content { white-space: pre-wrap; color: #333; }
   .markdown h1, .markdown h2, .markdown h3 { font-size: 14px; font-weight: 600; color: #1d1d1f; margin: 12px 0 4px; }
   .markdown h1:first-child, .markdown h2:first-child, .markdown h3:first-child { margin-top: 0; }
   .markdown p { margin: 6px 0; }
@@ -220,7 +250,10 @@ HTML = """<!DOCTYPE html>
     </select>
     <button id="prepare-btn" onclick="prepare()">Prepare</button>
   </div>
-  <button id="sources-toggle" onclick="toggleSources()">＋ Add Sources</button>
+  <div id="header-controls">
+    <button id="sources-toggle" onclick="toggleSources()">＋ Add Sources</button>
+    <button id="clear-btn" onclick="clearConversation()">✕ Clear</button>
+  </div>
   <div id="sources-area">
     <textarea id="sources-input" placeholder="Paste additional context here — emails, documents, notes from other apps..."></textarea>
   </div>
@@ -259,6 +292,20 @@ HTML = """<!DOCTYPE html>
     }
   }
 
+  function clearConversation() {
+    var conv = document.getElementById('conversation');
+    var blocks = conv.querySelectorAll('.response-block, .followup-q-wrap');
+    blocks.forEach(function(b) { b.remove(); });
+    document.getElementById('followup-input').style.display = 'none';
+    document.getElementById('followup-btn').style.display = 'none';
+    document.getElementById('action-bar').style.display = 'none';
+    document.getElementById('clear-btn').style.display = 'none';
+    document.getElementById('status').textContent = 'Enter your meeting description above and click Prepare.';
+    document.getElementById('meeting-input').value = '';
+    document.getElementById('prepare-btn').disabled = false;
+    pywebview.api.run_clear();
+  }
+
   function prepare() {
     var desc = document.getElementById('meeting-input').value.trim();
     if (!desc) return;
@@ -267,6 +314,7 @@ HTML = """<!DOCTYPE html>
     var extra = document.getElementById('sources-input').value;
     document.getElementById('prepare-btn').disabled = true;
     document.getElementById('action-bar').style.display = 'none';
+    document.getElementById('clear-btn').style.display = 'none';
     document.getElementById('followup-input').style.display = 'none';
     document.getElementById('followup-btn').style.display = 'none';
     var conv = document.getElementById('conversation');
@@ -283,68 +331,108 @@ HTML = """<!DOCTYPE html>
     else if (state === 'nothinking') el.innerHTML = '🤔 No matching notes found. Generating general talking points...';
   }
 
-  function renderMarkdown(content) {
-    return marked.parse(content);
-  }
+  // Streaming state
+  var _streamBlock = null;
+  var _streamEl = null;
+  var _streamText = '';
+  var _streamLabel = '';
 
-  function appendResponse(content) {
+  function startStream(label) {
+    _streamLabel = label || 'Analysis';
+    _streamText = '';
     var conv = document.getElementById('conversation');
     var fuRow = document.getElementById('followup-row');
-    var block = document.createElement('div');
-    block.className = 'response-block';
-    var label = document.createElement('div');
-    label.className = 'response-label';
-    label.textContent = 'Analysis';
-    var text = document.createElement('div');
-    text.className = 'markdown';
-    text.innerHTML = renderMarkdown(content);
-    block.appendChild(label);
-    block.appendChild(text);
-    conv.insertBefore(block, fuRow);
+    _streamBlock = document.createElement('div');
+    _streamBlock.className = 'response-block';
+    var labelEl = document.createElement('div');
+    labelEl.className = 'response-label';
+    labelEl.textContent = _streamLabel;
+    _streamEl = document.createElement('div');
+    _streamEl.className = 'stream-content';
+    _streamBlock.appendChild(labelEl);
+    _streamBlock.appendChild(_streamEl);
+    conv.insertBefore(_streamBlock, fuRow);
+  }
+
+  function appendChunk(chunk) {
+    _streamText += chunk;
+    _streamEl.textContent = _streamText;
+    var conv = document.getElementById('conversation');
+    conv.scrollTop = conv.scrollHeight;
+  }
+
+  function finalizeStream(content) {
+    _streamEl.className = 'markdown';
+    _streamEl.innerHTML = marked.parse(content);
+    _streamBlock = null;
+    _streamEl = null;
+    _streamText = '';
     document.getElementById('followup-input').style.display = 'block';
     document.getElementById('followup-btn').style.display = 'block';
     document.getElementById('status').innerHTML = '✅ Ready';
     document.getElementById('action-bar').style.display = 'flex';
+    document.getElementById('clear-btn').style.display = 'inline';
     document.getElementById('prepare-btn').disabled = false;
+    var conv = document.getElementById('conversation');
     conv.scrollTop = conv.scrollHeight;
   }
 
-  function appendFollowup(question, content) {
+  function startFollowupStream() {
+    _streamText = '';
     var conv = document.getElementById('conversation');
     var fuRow = document.getElementById('followup-row');
+    // Add question bubble placeholder (will be filled on finalize)
     var qWrap = document.createElement('div');
     qWrap.className = 'followup-q-wrap';
-    var qBubble = document.createElement('div');
-    qBubble.className = 'followup-q';
-    qBubble.textContent = question;
-    qWrap.appendChild(qBubble);
+    qWrap.id = 'pending-q-wrap';
     conv.insertBefore(qWrap, fuRow);
-    var rBlock = document.createElement('div');
-    rBlock.className = 'response-block';
-    var label = document.createElement('div');
-    label.className = 'response-label';
-    label.textContent = 'Response';
-    var text = document.createElement('div');
-    text.className = 'markdown';
-    text.innerHTML = renderMarkdown(content);
-    rBlock.appendChild(label);
-    rBlock.appendChild(text);
-    conv.insertBefore(rBlock, fuRow);
+    // Start stream block for answer
+    _streamBlock = document.createElement('div');
+    _streamBlock.className = 'response-block';
+    var labelEl = document.createElement('div');
+    labelEl.className = 'response-label';
+    labelEl.textContent = 'Response';
+    _streamEl = document.createElement('div');
+    _streamEl.className = 'stream-content';
+    _streamBlock.appendChild(labelEl);
+    _streamBlock.appendChild(_streamEl);
+    conv.insertBefore(_streamBlock, fuRow);
+    document.getElementById('followup-btn').disabled = true;
+    document.getElementById('status').innerHTML = '🤔 Thinking...';
+  }
+
+  function finalizeFollowupStream(question, content) {
+    // Fill in question bubble
+    var qWrap = document.getElementById('pending-q-wrap');
+    if (qWrap) {
+      qWrap.removeAttribute('id');
+      var qBubble = document.createElement('div');
+      qBubble.className = 'followup-q';
+      qBubble.textContent = question;
+      qWrap.appendChild(qBubble);
+    }
+    // Render markdown in answer
+    _streamEl.className = 'markdown';
+    _streamEl.innerHTML = marked.parse(content);
+    _streamBlock = null;
+    _streamEl = null;
+    _streamText = '';
     document.getElementById('followup-input').value = '';
     document.getElementById('followup-btn').disabled = false;
     document.getElementById('status').innerHTML = '✅ Ready';
+    var conv = document.getElementById('conversation');
     conv.scrollTop = conv.scrollHeight;
-  }
-
-  function setFollowupThinking() {
-    document.getElementById('followup-btn').disabled = true;
-    document.getElementById('status').innerHTML = '🤔 Thinking...';
   }
 
   function setError(msg) {
     document.getElementById('status').innerHTML = '❌ Error: ' + msg;
     document.getElementById('prepare-btn').disabled = false;
     document.getElementById('followup-btn').disabled = false;
+    if (_streamBlock) {
+      _streamBlock.remove();
+      _streamBlock = null;
+      _streamEl = null;
+    }
   }
 
   function askFollowup() {

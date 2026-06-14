@@ -39,7 +39,7 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name='Notes AI Assistant.app',
-    icon=None,
+    icon='icon.icns',
     bundle_identifier='com.notesai.assistant',
     info_plist={
         'NSAppleEventsUsageDescription': 'Notes AI Assistant needs access to Notes to read your notes.',

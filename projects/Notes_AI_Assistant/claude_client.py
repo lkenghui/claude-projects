@@ -48,7 +48,8 @@ FORMAT_INSTRUCTIONS = {
 
 def prepare_talking_points(notes: list, meeting_description: str,
                            fmt: str = 'bullets', extra_sources: str = '',
-                           model: str = 'claude-haiku-4-5-20251001') -> tuple:
+                           model: str = 'claude-haiku-4-5-20251001',
+                           chunk_callback=None) -> tuple:
     client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
     notes_text = ""
@@ -76,32 +77,41 @@ Please prepare talking points for this meeting."""
 
     messages = [{"role": "user", "content": user_message}]
 
-    response = client.messages.create(
-        model=model,
-        max_tokens=2000,
-        system=SYSTEM_PROMPT,
-        messages=messages
-    )
+    if chunk_callback:
+        with client.messages.stream(model=model, max_tokens=2000,
+                                    system=SYSTEM_PROMPT, messages=messages) as stream:
+            reply = ''
+            for text in stream.text_stream:
+                reply += text
+                chunk_callback(text)
+    else:
+        response = client.messages.create(model=model, max_tokens=2000,
+                                          system=SYSTEM_PROMPT, messages=messages)
+        reply = response.content[0].text
 
-    reply = response.content[0].text
     messages.append({"role": "assistant", "content": reply})
     return reply, messages
 
 
 def ask_followup(question: str, history: list,
-                 model: str = 'claude-haiku-4-5-20251001') -> tuple:
+                 model: str = 'claude-haiku-4-5-20251001',
+                 chunk_callback=None) -> tuple:
     client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
     messages = history.copy()
     messages.append({"role": "user", "content": question})
 
-    response = client.messages.create(
-        model=model,
-        max_tokens=2000,
-        system=SYSTEM_PROMPT,
-        messages=messages
-    )
+    if chunk_callback:
+        with client.messages.stream(model=model, max_tokens=2000,
+                                    system=SYSTEM_PROMPT, messages=messages) as stream:
+            reply = ''
+            for text in stream.text_stream:
+                reply += text
+                chunk_callback(text)
+    else:
+        response = client.messages.create(model=model, max_tokens=2000,
+                                          system=SYSTEM_PROMPT, messages=messages)
+        reply = response.content[0].text
 
-    reply = response.content[0].text
     messages.append({"role": "assistant", "content": reply})
     return reply, messages
