@@ -10,6 +10,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 from notes_reader import get_relevant_notes
 from claude_client import prepare_talking_points, ask_followup
+from file_reader import extract_text
 
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 
@@ -151,6 +152,27 @@ class Api:
     def run_save(self):
         save_to_notes(self._meeting_title, '\n\n---\n\n'.join(self._all_content))
 
+    def process_binary_file(self, filename, b64data, ext):
+        def run():
+            try:
+                import base64, io
+                raw = base64.b64decode(b64data.split(',', 1)[-1])
+                if ext == 'pdf':
+                    from pypdf import PdfReader
+                    reader = PdfReader(io.BytesIO(raw))
+                    text = '\n\n'.join(p.extract_text() or '' for p in reader.pages).strip()
+                elif ext == 'docx':
+                    from docx import Document
+                    doc = Document(io.BytesIO(raw))
+                    text = '\n'.join(p.text for p in doc.paragraphs if p.text.strip())
+                else:
+                    text = raw.decode('utf-8', errors='replace')
+                self.window.evaluate_js(f"onFileLoaded({json.dumps(filename)}, {json.dumps(text)})")
+            except Exception as e:
+                logging.exception("Error processing file")
+                self.window.evaluate_js(f"setError({json.dumps('File error: ' + str(e))})")
+        threading.Thread(target=run, daemon=True).start()
+
     def run_clear(self):
         self._history = []
         self._all_content = []
@@ -208,6 +230,10 @@ HTML = """<!DOCTYPE html>
   #sources-area { display: none; margin-top: 8px; }
   #sources-input { width: 100%; height: 72px; padding: 8px 10px; border: 1px solid #d0d0d0; border-radius: 8px; font-size: 13px; resize: vertical; font-family: inherit; outline: none; }
   #sources-input:focus { border-color: #007AFF; }
+  #sources-input.drag-over { border-color: #007AFF; background: #f0f7ff; }
+  #file-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .file-chip { background: #e8f0fe; color: #1a56db; border-radius: 12px; padding: 3px 10px; font-size: 12px; display: flex; align-items: center; gap: 6px; }
+  .file-chip button { background: none; border: none; color: #888; font-size: 13px; cursor: pointer; padding: 0; line-height: 1; }
   #status { padding: 8px 20px; font-size: 13px; color: #666; flex-shrink: 0; min-height: 32px; display: flex; align-items: center; }
   #conversation { flex: 1; overflow-y: auto; padding: 0 20px 16px; }
   .response-block { background: white; border-radius: 10px; padding: 16px; margin-top: 12px; line-height: 1.7; font-size: 14px; }
@@ -255,7 +281,8 @@ HTML = """<!DOCTYPE html>
     <button id="clear-btn" onclick="clearConversation()">✕ Clear</button>
   </div>
   <div id="sources-area">
-    <textarea id="sources-input" placeholder="Paste additional context here — emails, documents, notes from other apps..."></textarea>
+    <textarea id="sources-input" placeholder="Paste text or drop files here (PDF, DOCX, TXT, MD)..."></textarea>
+    <div id="file-chips"></div>
   </div>
 </div>
 <div id="status">Enter your meeting description above and click Prepare.</div>
@@ -271,6 +298,8 @@ HTML = """<!DOCTYPE html>
 </div>
 
 <script>
+
+  var _fileTexts = {};
 
   document.getElementById('meeting-input').addEventListener('keydown', function(e) {
     if (e.key === 'Enter') prepare();
@@ -303,6 +332,8 @@ HTML = """<!DOCTYPE html>
     document.getElementById('status').textContent = 'Enter your meeting description above and click Prepare.';
     document.getElementById('meeting-input').value = '';
     document.getElementById('prepare-btn').disabled = false;
+    _fileTexts = {};
+    document.getElementById('file-chips').innerHTML = '';
     pywebview.api.run_clear();
   }
 
@@ -312,6 +343,8 @@ HTML = """<!DOCTYPE html>
     var fmt = document.getElementById('format-select').value;
     var model = document.getElementById('model-select').value;
     var extra = document.getElementById('sources-input').value;
+    var fileTexts = Object.entries(_fileTexts).map(function(e) { return "--- " + e[0] + " ---\\n" + e[1]; }).join("\\n\\n");
+    if (fileTexts) extra = extra ? extra + "\\n\\n" + fileTexts : fileTexts;
     document.getElementById('prepare-btn').disabled = true;
     document.getElementById('action-bar').style.display = 'none';
     document.getElementById('clear-btn').style.display = 'none';
@@ -456,6 +489,63 @@ HTML = """<!DOCTYPE html>
       btn.textContent = 'Saved ✓';
     });
   }
+
+  function onFileLoaded(filename, text) {
+    _fileTexts[filename] = text;
+    var chips = document.getElementById('file-chips');
+    var chipId = "chip_" + filename.replace(/[^a-z0-9]/gi, "_");
+    if (!document.getElementById(chipId)) {
+      var chip = document.createElement('div');
+      chip.className = 'file-chip';
+      chip.id = chipId;
+      var label = document.createElement('span');
+      label.textContent = '📄 ' + filename;
+      var btn = document.createElement('button');
+      btn.textContent = '✕';
+      btn.onclick = (function(fn, id) { return function() {
+        delete _fileTexts[fn];
+        var el = document.getElementById(id);
+        if (el) el.remove();
+      }; })(filename, chipId);
+      chip.appendChild(label);
+      chip.appendChild(btn);
+      chips.appendChild(chip);
+    }
+  }
+
+  // Drag-and-drop onto sources textarea
+  var srcEl = document.getElementById('sources-input');
+  srcEl.addEventListener('dragover', function(e) {
+    e.preventDefault();
+    srcEl.classList.add('drag-over');
+  });
+  srcEl.addEventListener('dragleave', function() {
+    srcEl.classList.remove('drag-over');
+  });
+  srcEl.addEventListener('drop', function(e) {
+    e.preventDefault();
+    srcEl.classList.remove('drag-over');
+    var files = e.dataTransfer.files;
+    for (var i = 0; i < files.length; i++) {
+      (function(file) {
+        var name = file.name;
+        var ext = name.split('.').pop().toLowerCase();
+        if (ext === 'txt' || ext === 'md' || ext === 'csv') {
+          var reader = new FileReader();
+          reader.onload = function(ev) { onFileLoaded(name, ev.target.result); };
+          reader.readAsText(file);
+        } else if (ext === 'pdf' || ext === 'docx') {
+          var reader = new FileReader();
+          reader.onload = function(ev) {
+            pywebview.api.process_binary_file(name, ev.target.result, ext);
+          };
+          reader.readAsDataURL(file);
+        } else {
+          setError('Unsupported file type: ' + ext);
+        }
+      })(files[i]);
+    }
+  });
 </script>
 </body>
 </html>"""
