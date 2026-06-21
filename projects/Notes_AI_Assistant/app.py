@@ -29,6 +29,13 @@ def load_config():
             return json.load(f)
     except FileNotFoundError:
         return {}
+    except json.JSONDecodeError as e:
+        logging.warning(f"Config file corrupted ({e}) — backing up and resetting")
+        try:
+            os.rename(CONFIG_PATH, CONFIG_PATH + '.bak')
+        except Exception:
+            pass
+        return {}
     except Exception as e:
         logging.warning(f"Failed to load config: {e}")
         return {}
@@ -910,6 +917,16 @@ HTML = """<!DOCTYPE html>
 
   var _fileTexts = {};
 
+  function buildExtraSources(pastedText) {
+    var nl = String.fromCharCode(10);
+    var fileTexts = Object.entries(_fileTexts).map(function(e) {
+      return '--- ' + e[0] + ' ---' + nl + e[1];
+    }).join(nl + nl);
+    var extra = pastedText || '';
+    if (fileTexts) extra = extra ? extra + nl + nl + fileTexts : fileTexts;
+    return extra;
+  }
+
   document.getElementById('prepare-btn').addEventListener('click', prepare);
   document.getElementById('meeting-input').addEventListener('keydown', function(e) {
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) prepare();
@@ -997,10 +1014,7 @@ HTML = """<!DOCTYPE html>
     if (!desc) { document.getElementById('status').textContent = 'Type a meeting description first.'; return; }
     var fmt = document.getElementById('format-select').value;
     var model = document.getElementById('model-select').value;
-    var extra = document.getElementById('sources-input').value;
-    var nl = String.fromCharCode(10);
-    var fileTexts = Object.entries(_fileTexts).map(function(e) { return "--- " + e[0] + " ---" + nl + e[1]; }).join(nl + nl);
-    if (fileTexts) extra = extra ? extra + nl + nl + fileTexts : fileTexts;
+    var extra = buildExtraSources(document.getElementById('sources-input').value);
     document.getElementById('prepare-btn').disabled = true;
     document.getElementById('action-bar').style.display = 'none';
     document.getElementById('clear-btn').style.display = 'none';
@@ -1096,6 +1110,7 @@ HTML = """<!DOCTYPE html>
 
     // Feature 4: parse References section and add ↗ Open buttons for matched notes
     (function addRefOpenButtons(mdEl) {
+      if (!mdEl) return;
       var children = mdEl.children;
       var inRefs = false;
       for (var ci = 0; ci < children.length; ci++) {
@@ -1143,7 +1158,7 @@ HTML = """<!DOCTYPE html>
           }
         }
       }
-    })(_streamEl || document.querySelector('.markdown:last-of-type'));
+    })((_streamEl || document.querySelector('.markdown:last-of-type')) || null);
 
     _streamBlock = null;
     _streamEl = null;
@@ -1210,10 +1225,11 @@ HTML = """<!DOCTYPE html>
   function setError(msg) {
     clearSearchTimer();
     var el = document.getElementById('status');
-    el.innerHTML = '❌ ' + msg;
+    el.textContent = '❌ ' + msg;
     el.style.color = '#e5534b';
     document.getElementById('prepare-btn').disabled = false;
     document.getElementById('followup-btn').disabled = false;
+    document.getElementById('clear-btn').style.display = 'inline';
     if (_streamBlock) {
       _streamBlock.remove();
       _streamBlock = null;
@@ -1245,6 +1261,7 @@ HTML = """<!DOCTYPE html>
   // Feature 6: Copy conversation as plain text
 
   function onFileLoaded(filename, text) {
+    if (!text || !text.trim()) { setError('File is empty: ' + filename); return; }
     _fileTexts[filename] = text;
     var chips = document.getElementById('file-chips');
     var chipId = "chip_" + filename.replace(/[^a-z0-9]/gi, "_") + "_" + Date.now();
@@ -1420,13 +1437,7 @@ HTML = """<!DOCTYPE html>
       checklist.remove();
     }
 
-    var extra = document.getElementById('sources-input').value;
-    var nl = String.fromCharCode(10);
-    var fileTexts = Object.entries(_fileTexts).map(function(e) {
-      return '--- ' + e[0] + ' ---' + nl + e[1];
-    }).join(nl + nl);
-    if (fileTexts) extra = extra ? extra + nl + nl + fileTexts : fileTexts;
-
+    var extra = buildExtraSources(document.getElementById('sources-input').value);
     document.getElementById('clear-btn').style.display = 'none';
     pywebview.api.run_generate(JSON.stringify({selected: selected, extra_sources: extra}));
   }
