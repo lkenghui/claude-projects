@@ -16,6 +16,7 @@ Index of all projects in this workspace.
 | 6 | [News_Summariser](projects/News_Summariser/) | Fetches science & tech news from MIT Tech Review, Science.org, and Nature.com, summarises and categorises articles into a daily digest using Claude. | Flask + Claude + SQLite | [news-summariser-s1tq.onrender.com](https://news-summariser-s1tq.onrender.com) |
 | 7 | [debate-agents](projects/debate-agents/) | Two Claude agents argue opposing sides of any topic across 3 rounds, with a preliminary judge, fact-checker, and final verdict. Real-time streaming via SSE. | FastAPI + Claude + SQLite + SSE | [debate-agents.onrender.com](https://debate-agents.onrender.com) |
 | 8 | [Food_Nutrition_App](projects/Food_Nutrition_App/) | iPhone PWA for food nutrition tracking. Type a meal or snap a photo — Claude analyses nutrition instantly. Includes daily goals calculator (BMR), macro tracking, and meal history. | FastAPI + Claude + PostgreSQL + PWA | [food-nutrition-app-x2qf.onrender.com](https://food-nutrition-app-x2qf.onrender.com) |
+| 9 | [Notes_AI_Assistant](projects/Notes_AI_Assistant/) | macOS desktop app for meeting preparation. Searches Apple Notes using a two-phase keyword strategy, ranks results with Claude, and generates structured talking points with context, commitments, strategic questions, and references. | Python + pywebview + Claude + AppleScript + PyInstaller | Local |
 
 ---
 
